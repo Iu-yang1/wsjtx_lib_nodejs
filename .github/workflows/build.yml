@@ -41,6 +41,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake build-essential gfortran libfftw3-dev libboost-all-dev pkg-config patchelf
+          printf '%s\n' \
+            'subroutine trampoline_check' \
+            'end subroutine trampoline_check' \
+            > /tmp/trampoline-check.f90
+          if gfortran -Wtrampolines -Werror=trampolines -c /tmp/trampoline-check.f90 -o /tmp/trampoline-check.o; then
+            echo "FFLAGS=-Wtrampolines -Werror=trampolines" >> "$GITHUB_ENV"
+          fi
 
       # macOS dependencies
       - name: Install dependencies (macOS)
@@ -135,16 +142,35 @@ jobs:
           cp build/Release/libwsjtx_core.so "$TARGET_DIR/" 2>/dev/null || true
 
           # Bundle runtime shared libraries
-          ldd "$NODE_FILE" | awk '{print $3}' | while read lib; do
-            if [ -f "$lib" ] && [[ "$lib" == *libfftw* || "$lib" == *libgfortran* || "$lib" == *libgcc* || "$lib" == *libquadmath* || "$lib" == *libstdc++* ]]; then
-              cp -n "$lib" "$TARGET_DIR/" 2>/dev/null || true
-            fi
+          for binary in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
+            [ -f "$binary" ] || continue
+            ldd "$binary" | awk '{print $3}' | while read lib; do
+              if [ -f "$lib" ] && [[ "$lib" == *libfftw* || "$lib" == *libgfortran* || "$lib" == *libgcc* || "$lib" == *libquadmath* || "$lib" == *libstdc++* ]]; then
+                cp -n "$lib" "$TARGET_DIR/" 2>/dev/null || true
+              fi
+            done
           done
           patchelf --set-rpath '$ORIGIN' "$NODE_FILE" || true
           patchelf --set-rpath '$ORIGIN' "$TARGET_DIR/libwsjtx_core.so" 2>/dev/null || true
 
-          echo '{}' | jq --arg p "${{ matrix.platform }}" --arg a "${{ matrix.arch }}" \
-            '{platform: $p, arch: $a, build_time: now | todate}' > "$TARGET_DIR/build-info.json"
+          stack_report=""
+          for elf in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
+            [ -f "$elf" ] || continue
+            flags=$(readelf -W -l "$elf" | awk '/GNU_STACK/ {print $(NF-1)}')
+            echo "GNU_STACK $(basename "$elf"): ${flags:-missing}"
+            stack_report="$stack_report $(basename "$elf")=${flags:-missing}"
+            if [ -z "$flags" ]; then
+              echo "Missing GNU_STACK program header in Linux prebuild: $elf" >&2
+              exit 1
+            fi
+            if [[ "$flags" == *E* ]]; then
+              echo "Executable stack is not allowed in Linux prebuilds: $elf ($flags)" >&2
+              exit 1
+            fi
+          done
+
+          echo '{}' | jq --arg p "${{ matrix.platform }}" --arg a "${{ matrix.arch }}" --arg stack "$stack_report" \
+            '{platform: $p, arch: $a, build_time: now | todate, requires_executable_stack: false, gnu_stack: ($stack | ltrimstr(" "))}' > "$TARGET_DIR/build-info.json"
           ls -la "$TARGET_DIR"
 
       - name: Package prebuilds (macOS)
@@ -165,6 +191,43 @@ jobs:
           done
           # dylibbundler follows transitive deps: .node → libwsjtx_core.dylib → fftw, gfortran, etc.
           dylibbundler -x "$NODE_FILE" -d "$TARGET_DIR" -p "@loader_path/" $SP_ARGS -b -of
+
+          # dylibbundler can append the same LC_RPATH more than once when
+          # transitive dependencies already carry matching rpaths. Keep the
+          # packaged Mach-O files deterministic and easy to re-sign downstream.
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          target = Path("prebuilds/${{ matrix.platform }}-${{ matrix.arch }}")
+          files = [target / "wsjtx_lib_nodejs.node", *sorted(target.glob("*.dylib"))]
+
+          def rpaths(path):
+              out = subprocess.check_output(["otool", "-l", str(path)], text=True)
+              paths = []
+              lines = out.splitlines()
+              for i, line in enumerate(lines):
+                  if line.strip() == "cmd LC_RPATH":
+                      for j in range(i, min(i + 8, len(lines))):
+                          s = lines[j].strip()
+                          if s.startswith("path "):
+                              paths.append(s.split(" ", 2)[1])
+              return paths
+
+          for file in files:
+              while file.exists():
+                  paths = rpaths(file)
+                  duplicate = next((p for p in paths if paths.count(p) > 1), None)
+                  if duplicate is None:
+                      break
+                  print(f"Deleting duplicate LC_RPATH {duplicate} from {file}")
+                  subprocess.check_call(["install_name_tool", "-delete_rpath", duplicate, str(file)])
+          PY
+
+          for f in "$NODE_FILE" "$TARGET_DIR"/*.dylib; do
+            [ -f "$f" ] || continue
+            codesign --force --deep --preserve-metadata=entitlements,requirements,flags,runtime --sign - "$f"
+          done
 
           echo '{}' | jq --arg p "${{ matrix.platform }}" --arg a "${{ matrix.arch }}" \
             '{platform: $p, arch: $a, build_time: now | todate}' > "$TARGET_DIR/build-info.json"
@@ -254,6 +317,19 @@ jobs:
         run: |
           for p in linux-x64 linux-arm64 darwin-arm64 darwin-x64 win32-x64; do
             test -f "prebuilds/$p/wsjtx_lib_nodejs.node" || { echo "Missing: $p"; exit 1; }
+          done
+          for elf in prebuilds/linux-*/wsjtx_lib_nodejs.node prebuilds/linux-*/libwsjtx_core.so; do
+            test -f "$elf" || { echo "Missing Linux ELF: $elf"; exit 1; }
+            flags=$(readelf -W -l "$elf" | awk '/GNU_STACK/ {print $(NF-1)}')
+            echo "GNU_STACK $elf: ${flags:-missing}"
+            if [ -z "$flags" ]; then
+              echo "Missing GNU_STACK program header in Linux prebuild: $elf" >&2
+              exit 1
+            fi
+            if [[ "$flags" == *E* ]]; then
+              echo "Executable stack is not allowed in Linux prebuilds: $elf ($flags)" >&2
+              exit 1
+            fi
           done
           echo "All 5 platform prebuilds verified."
 

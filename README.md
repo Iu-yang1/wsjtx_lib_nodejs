@@ -47,6 +47,11 @@ Runtime binary loading uses `node-gyp-build` with prebuildify layout
 (`prebuilds/<platform>-<arch>/*.node`), and falls back to
 `build/Release/*.node` for local development builds.
 
+Linux prebuilds are built and checked so neither `wsjtx_lib_nodejs.node` nor
+`libwsjtx_core.so` requires an executable stack. Downstreams should not patch
+`PT_GNU_STACK` or require `GLIBC_TUNABLES=glibc.rtld.execstack=2`; if that
+condition appears, treat it as a source/build regression.
+
 ### Building from Source
 
 Only needed if prebuilt binaries are not available for your platform.

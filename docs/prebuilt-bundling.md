@@ -22,6 +22,7 @@
   - Linux：设置（或覆盖）RPATH/RUNPATH 为 `$ORIGIN`（同级目录）。
   - Windows：无需 rpath，DLL 与 `.node` 同级即可被加载器找到。
 - 验证：在 CI 中使用 `otool -L`（macOS）、`ldd`（Linux）、`objdump -p`（Windows）输出检查结果，确保无绝对路径残留且依赖可解析。
+- Linux 预构建必须原生不要求 executable stack。Fortran callback 结构不得依赖 gfortran stack trampoline；下游不应通过清理 ELF `PT_GNU_STACK` 标记来掩盖源码问题。
 
 平台做法与所用工具
 
@@ -49,13 +50,14 @@ dylibbundler \
 - 验证：
 ```
 otool -L prebuilds/darwin-arm64/wsjtx_lib_nodejs.node
+otool -l prebuilds/darwin-arm64/wsjtx_lib_nodejs.node | grep -A2 LC_RPATH
 ```
-应看到 `@loader_path/libfftw3f.3.dylib` 等（同级目录），无 Homebrew 绝对路径。
+应看到 `@loader_path/libfftw3f.3.dylib` 等（同级目录），无 Homebrew 绝对路径，且同一个 `LC_RPATH` 不应重复出现。
 
 2) Linux（使用 `patchelf` + `ldd`）
 
 - 依赖：`apt-get install -y patchelf`（以及 `ldd`）
-- 复制依赖：用 `ldd` 列出 `.node` 的依赖，筛选并复制目标库到与 `.node` 同级目录：
+- 复制依赖：用 `ldd` 列出 `.node` 和 `libwsjtx_core.so` 的依赖，筛选并复制目标库到与 `.node` 同级目录：
   - 包括 `libfftw3f*`、`libgfortran*`、`libquadmath*`、`libgcc_s*`（可酌情包含 `libstdc++*`）。
   - 排除 glibc（`libc`, `libm`, `libpthread`, `ld-linux` 等）。
 - 设置 RPATH：
@@ -65,8 +67,11 @@ patchelf --set-rpath '$ORIGIN' prebuilds/linux-*/wsjtx_lib_nodejs.node
 - 验证：
 ```
 ldd prebuilds/linux-*/wsjtx_lib_nodejs.node | grep -v 'linux-vdso\|ld-linux\|libc\|libm\|libpthread\|libdl'
+ldd prebuilds/linux-*/libwsjtx_core.so | grep -v 'linux-vdso\|ld-linux\|libc\|libm\|libpthread\|libdl'
+readelf -W -l prebuilds/linux-*/wsjtx_lib_nodejs.node | grep GNU_STACK
+readelf -W -l prebuilds/linux-*/libwsjtx_core.so | grep GNU_STACK
 ```
-应无 "not found"，关键库解析到同目录。
+应无 "not found"，关键库解析到同目录；`GNU_STACK` flags 不得包含 `E`。
 
 3) Windows（MinGW/MSYS2 工具链）
 
@@ -79,20 +84,22 @@ CI 集成（简化、可重复）
 
 - **所有平台统一方案**：将依赖库与 `.node` 文件放在同级目录
 - macOS：用 `dylibbundler` 自动复制并改写到 `prebuilds/darwin-*/`；输出 `otool -L` 结果到日志。
-- Linux：安装 `patchelf`；复制 `ldd` 识别出的目标库到 `prebuilds/linux-*/` 并 `patchelf --set-rpath '$ORIGIN'`；输出 `ldd` 结果。
+- macOS：`dylibbundler` 后清理重复 `LC_RPATH` 并重新 ad-hoc codesign，避免下游 Electron/App 打包时再次遇到重复 rpath 或签名失效问题。
+- Linux：安装 `patchelf`；复制 `.node` 与 `libwsjtx_core.so` 经 `ldd` 识别出的目标库到 `prebuilds/linux-*/` 并 `patchelf --set-rpath '$ORIGIN'`；输出 `ldd` 结果。
 - Windows：用 `objdump` 枚举 DLL 并从 MinGW 目录复制到与 `.node` 同级；输出依赖列表。
 
 发布前校验
 
 - 生成 `prebuilds/*/` 后：
   - macOS：`otool -L` 检查路径应为 `@loader_path/<lib>.dylib`（同级目录）。
-  - Linux：`ldd` 无 "not found"，并且关键库解析到同目录。
+  - Linux：`ldd` 无 "not found"，并且关键库解析到同目录；`readelf -W -l` 检查 `.node` 与 `libwsjtx_core.so` 的 `GNU_STACK` 不含 execute flag。
   - Windows：`objdump -p` 的 DLL 在同级目录存在。
 
 注意事项
 
 - macOS 改写依赖会使原签名失效，dylibbundler 会进行 ad-hoc 签名；若集成到 Electron/App，需对最终产物统一签名/公证。
 - Linux 不要尝试捆绑或静态链接 glibc；可考虑 `-static-libstdc++ -static-libgcc` 减少 .so 数量。
+- Linux 不要发布需要 `GLIBC_TUNABLES=glibc.rtld.execstack=2` 的产物；如果 `readelf` 发现 `GNU_STACK` 含 `E`，应回到 Fortran 源码查找 internal procedure callback / trampoline，而不是对产物做 post-build patch。
 - **所有平台统一采用同级目录方案**，避免嵌套路径导致的 `@loader_path/native/native/` 等问题（详见下方"常见陷阱"）。
 
 ## 常见陷阱与解决方案
