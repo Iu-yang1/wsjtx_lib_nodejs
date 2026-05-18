@@ -68,6 +68,7 @@ otool -l prebuilds/darwin-arm64/wsjtx_lib_nodejs.node | grep -A2 LC_RPATH
 ```
 patchelf --set-rpath '$ORIGIN' prebuilds/linux-*/wsjtx_lib_nodejs.node
 ```
+- 对 `prebuilds/linux-*` 目录内所有随包发布的 `.so` / `.so.*` 也设置 `$ORIGIN`。Linux `RUNPATH` 不会传递给间接依赖，`libgfortran.so.5` 这类库必须能从同目录解析自己的 `libquadmath.so.0` 等子依赖。
 - 验证：
 ```
 ldd prebuilds/linux-*/wsjtx_lib_nodejs.node | grep -v 'linux-vdso\|ld-linux\|libc\|libm\|libpthread\|libdl'

@@ -80,8 +80,14 @@ jobs:
                   fi
                 done
               done
-              patchelf --set-rpath "\$ORIGIN" "$NODE_FILE"
-              patchelf --set-rpath "\$ORIGIN" "$TARGET_DIR/libwsjtx_core.so"
+
+              # RUNPATH is not transitive, so bundled libraries such as
+              # libgfortran must also know to resolve their own dependencies
+              # (for example libquadmath) from the prebuild directory.
+              for elf in "$TARGET_DIR"/*.node "$TARGET_DIR"/*.so "$TARGET_DIR"/*.so.*; do
+                [ -f "$elf" ] || continue
+                patchelf --set-rpath "\$ORIGIN" "$elf"
+              done
 
               stack_report=""
               for elf in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
