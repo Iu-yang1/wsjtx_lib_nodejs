@@ -56,6 +56,10 @@ otool -l prebuilds/darwin-arm64/wsjtx_lib_nodejs.node | grep -A2 LC_RPATH
 
 2) Linux（使用 `patchelf` + `ldd`）
 
+- 构建基线：Linux prebuild 必须在 Debian 12 / Bookworm（glibc 2.36）容器内构建，不能直接使用 `ubuntu-latest` 或 Debian 13/Trixie 作为发布构建环境。
+  - 目标是继续支持 Debian 12 / Bookworm 及其派生系统。
+  - arm64 产物不得依赖 `libmvec.so.1`；Debian 12 arm64 不提供该库。
+  - Linux 产物不得引用高于 `GLIBC_2.36` 的 glibc 符号。
 - 依赖：`apt-get install -y patchelf`（以及 `ldd`）
 - 复制依赖：用 `ldd` 列出 `.node` 和 `libwsjtx_core.so` 的依赖，筛选并复制目标库到与 `.node` 同级目录：
   - 包括 `libfftw3f*`、`libgfortran*`、`libquadmath*`、`libgcc_s*`（可酌情包含 `libstdc++*`）。
@@ -70,8 +74,9 @@ ldd prebuilds/linux-*/wsjtx_lib_nodejs.node | grep -v 'linux-vdso\|ld-linux\|lib
 ldd prebuilds/linux-*/libwsjtx_core.so | grep -v 'linux-vdso\|ld-linux\|libc\|libm\|libpthread\|libdl'
 readelf -W -l prebuilds/linux-*/wsjtx_lib_nodejs.node | grep GNU_STACK
 readelf -W -l prebuilds/linux-*/libwsjtx_core.so | grep GNU_STACK
+node scripts/check-linux-prebuild-compat.mjs prebuilds/linux-x64 prebuilds/linux-arm64
 ```
-应无 "not found"，关键库解析到同目录；`GNU_STACK` flags 不得包含 `E`。
+应无 "not found"，关键库解析到同目录；`GNU_STACK` flags 不得包含 `E`；兼容性检查不得出现 `libmvec.so.1` arm64 依赖或高于 `GLIBC_2.36` 的符号。
 
 3) Windows（MinGW/MSYS2 工具链）
 
@@ -86,6 +91,7 @@ CI 集成（简化、可重复）
 - macOS：用 `dylibbundler` 自动复制并改写到 `prebuilds/darwin-*/`；输出 `otool -L` 结果到日志。
 - macOS：`dylibbundler` 后清理重复 `LC_RPATH` 并重新 ad-hoc codesign，避免下游 Electron/App 打包时再次遇到重复 rpath 或签名失效问题。
 - Linux：安装 `patchelf`；复制 `.node` 与 `libwsjtx_core.so` 经 `ldd` 识别出的目标库到 `prebuilds/linux-*/` 并 `patchelf --set-rpath '$ORIGIN'`；输出 `ldd` 结果。
+- Linux：发布构建必须通过 `node:22-bookworm` 容器完成，即使 GitHub runner 本身是较新的 Ubuntu。
 - Windows：用 `objdump` 枚举 DLL 并从 MinGW 目录复制到与 `.node` 同级；输出依赖列表。
 
 发布前校验

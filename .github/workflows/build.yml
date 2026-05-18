@@ -18,8 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,     arch: x64,   platform: linux,  node_arch: x64   }
-          - { os: ubuntu-24.04-arm,  arch: arm64, platform: linux,  node_arch: arm64 }
+          - { os: ubuntu-latest,     arch: x64,   platform: linux,  node_arch: x64,   docker_platform: linux/amd64 }
+          - { os: ubuntu-24.04-arm,  arch: arm64, platform: linux,  node_arch: arm64, docker_platform: linux/arm64 }
           - { os: macos-latest,      arch: arm64, platform: darwin, node_arch: arm64 }
           - { os: macos-15-intel,    arch: x64,   platform: darwin, node_arch: x64   }
           - { os: windows-latest,    arch: x64,   platform: win32,  node_arch: x64   }
@@ -31,23 +31,84 @@ jobs:
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
+        if: runner.os != 'Linux'
         with:
           node-version: ${{ env.NODE_VERSION }}
           architecture: ${{ matrix.node_arch }}
 
-      # Linux dependencies
-      - name: Install dependencies (Linux)
+      # Linux prebuilds must be built on the oldest supported glibc baseline.
+      # Debian 12 / Bookworm has glibc 2.36 and catches accidental dependencies
+      # on newer Ubuntu/Trixie symbols such as arm64 libmvec vector math.
+      - name: Build and package Linux prebuild (Debian 12 Bookworm)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential gfortran libfftw3-dev libboost-all-dev pkg-config patchelf
-          printf '%s\n' \
-            'subroutine trampoline_check' \
-            'end subroutine trampoline_check' \
-            > /tmp/trampoline-check.f90
-          if gfortran -Wtrampolines -Werror=trampolines -c /tmp/trampoline-check.f90 -o /tmp/trampoline-check.o; then
-            echo "FFLAGS=-Wtrampolines -Werror=trampolines" >> "$GITHUB_ENV"
-          fi
+          docker run --rm --platform "${{ matrix.docker_platform }}" \
+            -v "$PWD:/work" -w /work node:22-bookworm bash -lc '
+              set -euxo pipefail
+              apt-get update -qq
+              apt-get install -y --no-install-recommends \
+                cmake build-essential gfortran libfftw3-dev libboost-all-dev \
+                pkg-config patchelf binutils jq python3 ca-certificates
+
+              printf "%s\n" \
+                "subroutine trampoline_check" \
+                "end subroutine trampoline_check" \
+                > /tmp/trampoline-check.f90
+              if gfortran -Wtrampolines -Werror=trampolines -c /tmp/trampoline-check.f90 -o /tmp/trampoline-check.o; then
+                export FFLAGS="${FFLAGS:-} -Wtrampolines -Werror=trampolines"
+              fi
+
+              npm ci --ignore-scripts
+              npm run build:ts
+
+              rm -rf build/
+              npx cmake-js compile --arch=${{ matrix.arch }}
+              npm test
+
+              TARGET_DIR="prebuilds/${{ matrix.platform }}-${{ matrix.arch }}"
+              rm -rf "$TARGET_DIR"
+              mkdir -p "$TARGET_DIR"
+              cp build/Release/wsjtx_lib_nodejs.node "$TARGET_DIR/"
+              cp build/Release/libwsjtx_core.so "$TARGET_DIR/"
+              NODE_FILE="$TARGET_DIR/wsjtx_lib_nodejs.node"
+
+              for binary in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
+                [ -f "$binary" ] || continue
+                ldd "$binary" | awk "{print \$3}" | while read lib; do
+                  if [ -f "$lib" ] && [[ "$lib" == *libfftw* || "$lib" == *libgfortran* || "$lib" == *libgcc* || "$lib" == *libquadmath* || "$lib" == *libstdc++* ]]; then
+                    cp -n "$lib" "$TARGET_DIR/" 2>/dev/null || true
+                  fi
+                done
+              done
+              patchelf --set-rpath "\$ORIGIN" "$NODE_FILE"
+              patchelf --set-rpath "\$ORIGIN" "$TARGET_DIR/libwsjtx_core.so"
+
+              stack_report=""
+              for elf in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
+                flags=$(readelf -W -l "$elf" | awk "/GNU_STACK/ {print \$(NF-1)}")
+                echo "GNU_STACK $(basename "$elf"): ${flags:-missing}"
+                stack_report="$stack_report $(basename "$elf")=${flags:-missing}"
+                if [ -z "$flags" ]; then
+                  echo "Missing GNU_STACK program header in Linux prebuild: $elf" >&2
+                  exit 1
+                fi
+                if [[ "$flags" == *E* ]]; then
+                  echo "Executable stack is not allowed in Linux prebuilds: $elf ($flags)" >&2
+                  exit 1
+                fi
+              done
+
+              node scripts/check-linux-prebuild-compat.mjs "$TARGET_DIR"
+
+              mv build build-built
+              node -e "const {WSJTXLib,WSJTXMode}=require(\"./dist/src/index.js\"); const lib=new WSJTXLib(); console.log(JSON.stringify({platform:process.platform,arch:process.arch,ft8:lib.isDecodingSupported(WSJTXMode.FT8)}));"
+              mv build-built build
+
+              echo "{}" | jq --arg p "${{ matrix.platform }}" --arg a "${{ matrix.arch }}" --arg stack "$stack_report" \
+                "{platform: \$p, arch: \$a, build_time: now | todate, build_baseline: \"debian-12-bookworm-glibc-2.36\", requires_executable_stack: false, gnu_stack: (\$stack | ltrimstr(\" \"))}" > "$TARGET_DIR/build-info.json"
+              ls -la "$TARGET_DIR"
+            '
+          sudo chown -R "$(id -u):$(id -g)" prebuilds build dist node_modules package-lock.json 2>/dev/null || true
 
       # macOS dependencies
       - name: Install dependencies (macOS)
@@ -78,11 +139,13 @@ jobs:
             mingw-w64-x86_64-gcc-fortran
 
       - run: npm ci --ignore-scripts
+        if: runner.os != 'Linux'
       - run: npm run build:ts
+        if: runner.os != 'Linux'
 
-      # Build native: Linux/macOS (single-step, both targets)
-      - name: Build native module (Linux/macOS)
-        if: runner.os != 'Windows'
+      # Build native: macOS only. Linux builds inside Debian 12 / Bookworm above.
+      - name: Build native module (macOS)
+        if: runner.os == 'macOS'
         run: |
           rm -rf build/
           npx cmake-js compile --arch=${{ matrix.arch }}
@@ -121,8 +184,8 @@ jobs:
           cp build-core/Release/wsjtx_core.dll build/Release/
 
       # Test
-      - name: Run tests (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
         run: npm test
 
       - name: Run tests (Windows)
@@ -130,49 +193,6 @@ jobs:
         run: npm test
 
       # Package prebuilds
-      - name: Package prebuilds (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          TARGET_DIR="prebuilds/${{ matrix.platform }}-${{ matrix.arch }}"
-          mkdir -p "$TARGET_DIR"
-          cp build/Release/wsjtx_lib_nodejs.node "$TARGET_DIR/"
-          NODE_FILE="$TARGET_DIR/wsjtx_lib_nodejs.node"
-
-          # Copy libwsjtx_core.so
-          cp build/Release/libwsjtx_core.so "$TARGET_DIR/" 2>/dev/null || true
-
-          # Bundle runtime shared libraries
-          for binary in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
-            [ -f "$binary" ] || continue
-            ldd "$binary" | awk '{print $3}' | while read lib; do
-              if [ -f "$lib" ] && [[ "$lib" == *libfftw* || "$lib" == *libgfortran* || "$lib" == *libgcc* || "$lib" == *libquadmath* || "$lib" == *libstdc++* ]]; then
-                cp -n "$lib" "$TARGET_DIR/" 2>/dev/null || true
-              fi
-            done
-          done
-          patchelf --set-rpath '$ORIGIN' "$NODE_FILE" || true
-          patchelf --set-rpath '$ORIGIN' "$TARGET_DIR/libwsjtx_core.so" 2>/dev/null || true
-
-          stack_report=""
-          for elf in "$NODE_FILE" "$TARGET_DIR/libwsjtx_core.so"; do
-            [ -f "$elf" ] || continue
-            flags=$(readelf -W -l "$elf" | awk '/GNU_STACK/ {print $(NF-1)}')
-            echo "GNU_STACK $(basename "$elf"): ${flags:-missing}"
-            stack_report="$stack_report $(basename "$elf")=${flags:-missing}"
-            if [ -z "$flags" ]; then
-              echo "Missing GNU_STACK program header in Linux prebuild: $elf" >&2
-              exit 1
-            fi
-            if [[ "$flags" == *E* ]]; then
-              echo "Executable stack is not allowed in Linux prebuilds: $elf ($flags)" >&2
-              exit 1
-            fi
-          done
-
-          echo '{}' | jq --arg p "${{ matrix.platform }}" --arg a "${{ matrix.arch }}" --arg stack "$stack_report" \
-            '{platform: $p, arch: $a, build_time: now | todate, requires_executable_stack: false, gnu_stack: ($stack | ltrimstr(" "))}' > "$TARGET_DIR/build-info.json"
-          ls -la "$TARGET_DIR"
-
       - name: Package prebuilds (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -318,19 +338,7 @@ jobs:
           for p in linux-x64 linux-arm64 darwin-arm64 darwin-x64 win32-x64; do
             test -f "prebuilds/$p/wsjtx_lib_nodejs.node" || { echo "Missing: $p"; exit 1; }
           done
-          for elf in prebuilds/linux-*/wsjtx_lib_nodejs.node prebuilds/linux-*/libwsjtx_core.so; do
-            test -f "$elf" || { echo "Missing Linux ELF: $elf"; exit 1; }
-            flags=$(readelf -W -l "$elf" | awk '/GNU_STACK/ {print $(NF-1)}')
-            echo "GNU_STACK $elf: ${flags:-missing}"
-            if [ -z "$flags" ]; then
-              echo "Missing GNU_STACK program header in Linux prebuild: $elf" >&2
-              exit 1
-            fi
-            if [[ "$flags" == *E* ]]; then
-              echo "Executable stack is not allowed in Linux prebuilds: $elf ($flags)" >&2
-              exit 1
-            fi
-          done
+          node scripts/check-linux-prebuild-compat.mjs prebuilds/linux-x64 prebuilds/linux-arm64
           echo "All 5 platform prebuilds verified."
 
       - run: npm publish
