@@ -53,6 +53,9 @@ export interface EncodeOptions extends Q65EncodeOptions {
  *
  * - frequency: nominal QSO frequency in Hz (decoder uses this as nfqso).
  * - txFrequency: transmit audio offset in Hz (decoder uses this as nftx).
+ * - utc: optional HHMMSS timestamp used as params.nutc. This is useful for
+ *   disk/WAV regression samples whose capture time is encoded in the file name.
+ *   Omit it for live decode; the native layer will use current local time.
  * - threads:   thread hint forwarded to the decoder. Defaults to maxThreads.
  * - myCall / myGrid / dxCall / dxGrid: AP decode context for the named station.
  * - lowFreq / highFreq / tolerance: scan window and tone tolerance in Hz
@@ -71,6 +74,7 @@ export interface EncodeOptions extends Q65EncodeOptions {
 export interface DecodeOptions extends Q65EncodeOptions {
   frequency: number;
   txFrequency?: number;
+  utc?: number;
   threads?: number;
   myCall?: string;
   myGrid?: string;
