@@ -250,8 +250,9 @@ export class WSJTXLib {
 
   private normalizeEncodeOptions(threadsOrOptions: number | EncodeOptions): NativeEncodeOptions {
     const options = typeof threadsOrOptions === 'number' ? { threads: threadsOrOptions } : threadsOrOptions;
+    const threads = options.threads ?? this.config.maxThreads;
     return {
-      threads: options.threads ?? this.config.maxThreads,
+      threads,
       q65Period: this.normalizeQ65Period(options.q65Period ?? 60),
       q65Submode: this.normalizeQ65Submode(options.q65Submode ?? 'A'),
     };
@@ -294,21 +295,21 @@ export class WSJTXLib {
     }
   }
 
-  private normalizeQ65Period(period: Q65Period | undefined): number {
+  private normalizeQ65Period(period: number): number {
     if (!Number.isInteger(period) || !Q65_PERIODS.has(period)) {
       throw new WSJTXError('q65Period must be one of 30, 60, 120, or 300', 'INVALID');
     }
     return period;
   }
 
-  private normalizeQ65Submode(submode: Q65Submode | undefined): number {
+  private normalizeQ65Submode(submode: Q65Submode): number {
     if (typeof submode === 'number') {
       if (!Number.isInteger(submode) || submode < 0 || submode > 4) {
         throw new WSJTXError('q65Submode must be A-E or 0..4', 'INVALID');
       }
       return submode;
     }
-    const normalized = Q65_SUBMODES.get(String(submode).toUpperCase());
+    const normalized = Q65_SUBMODES.get(submode.toUpperCase());
     if (normalized === undefined) {
       throw new WSJTXError('q65Submode must be A-E or 0..4', 'INVALID');
     }
