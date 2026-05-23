@@ -256,10 +256,11 @@ include_directories(
 # Dependencies for the core library
 set(LIBRARIES_FROM_REFERENCES ${FFTW3F_LIBRARIES} ${FFTW_THREADS_LIBRARIES})
 
-# Build the Fortran/C++ core.  Apply the Q65 source overlay before the
+# Build the Fortran/C++ core.  Apply the Q65 source overlays before the
 # submodule is configured so the generated wsjtx_lib target includes Q65 TX/RX.
 if(WSJTX_ENABLE_Q65_CHAIN)
     include("${CMAKE_SOURCE_DIR}/cmake/patch-wsjtx-q65.cmake")
+    include("${CMAKE_SOURCE_DIR}/cmake/patch-q65-diagnostics.cmake")
 endif()
 add_subdirectory(wsjtx_lib)
 link_directories(${FFTW3F_LIBRARY_DIRS})
