@@ -53,18 +53,24 @@ export interface EncodeOptions extends Q65EncodeOptions {
  *
  * - frequency: nominal QSO frequency in Hz (decoder uses this as nfqso).
  * - txFrequency: transmit audio offset in Hz (decoder uses this as nftx).
- * - utc: optional HHMMSS timestamp used as params.nutc. Useful for disk/WAV
- *   regression samples whose capture time is encoded in the file name.
- * - diskData: set params.ndiskdat. Defaults to true for Q65 and false for
- *   other modes, matching the WSJT-X disk-sample path for Q65 testing.
- * - newData: set params.newdat. Defaults to true.
- * - again: set params.nagain. Defaults to false.
- * - captureRawOutput: return Fortran decoder output lines in `rawOutput`.
+ * - threads:   thread hint forwarded to the decoder. Defaults to maxThreads.
+ * - myCall / myGrid / dxCall / dxGrid: AP decode context for the named station.
+ * - lowFreq / highFreq / tolerance: scan window and tone tolerance in Hz
+ *   (defaults: 200 / 4000 / 20). These are forwarded to the decoder via
+ *   `setDecodeRange` and *do* take effect.
+ * - apDecode: enables FT8/FT4 AP decode passes. Defaults to true.
+ * - decodeDepth: WSJT-X decoder depth. Defaults to 1.
+ * - qsoProgress: WSJT-X QSO progress stage. Defaults to 0.
+ * - q65Period / q65Submode: Q65-specific period and submode, also accepted
+ *   by encode options so Q65 TX/RX can be configured symmetrically.
+ * - q65MaxDrift: Q65 max drift control forwarded to the WSJT-X decoder.
+ * - q65ClearAveraging: clear Q65 averaged-message state before decode.
+ * - q65SingleDecode: request Q65 single-candidate decode behavior.
+ * - q65Averaging: enable Q65 averaged decode passes.
  */
 export interface DecodeOptions extends Q65EncodeOptions {
   frequency: number;
   txFrequency?: number;
-  utc?: number;
   threads?: number;
   myCall?: string;
   myGrid?: string;
@@ -76,10 +82,6 @@ export interface DecodeOptions extends Q65EncodeOptions {
   apDecode?: boolean;
   decodeDepth?: number;
   qsoProgress?: number;
-  diskData?: boolean;
-  newData?: boolean;
-  again?: boolean;
-  captureRawOutput?: boolean;
   q65MaxDrift?: number;
   q65ClearAveraging?: boolean;
   q65SingleDecode?: boolean;
@@ -89,8 +91,6 @@ export interface DecodeOptions extends Q65EncodeOptions {
 export interface DecodeResult {
   success: boolean;
   messages: WSJTXMessage[];
-  /** Raw Fortran decoder lines captured during this decode call, when enabled. */
-  rawOutput?: string[];
   error?: string;
 }
 
