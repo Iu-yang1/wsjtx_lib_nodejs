@@ -8,6 +8,9 @@ import { WSJTXLib, WSJTXMode } from '../dist/src/index.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const cacheDir = join(root, '.cache', 'wsjtx-official-q65-samples');
+const reportPath = join(root, 'q65-diagnostic-report.json');
+const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+const requireDecode = process.env.Q65_REQUIRE_DECODE === '1' || process.env.Q65_REQUIRE_DECODE === 'true';
 
 const samples = [
   { name: 'Q65-30A ionoscatter 6m', path: 'samples/Q65/30A_Ionoscatter_6m/201203_022700.wav', q65Period: 30, q65Submode: 'A' },
@@ -155,21 +158,24 @@ const selfCases = [
   { name: 'self-Q65-60B', q65Period: 60, q65Submode: 'B', message: 'CQ K1ABC FN20', utc: 120000 },
 ];
 
-let selfFailures = 0;
+const selfReports = [];
 for (const sample of selfCases) {
   const encoded = await lib.encode(WSJTXMode.Q65, sample.message, 1500, { threads: 1, q65Period: sample.q65Period, q65Submode: sample.q65Submode });
   const { probeResults, bestMessages } = await probeDecode({ audio: encoded.audioData, q65Period: sample.q65Period, q65Submode: sample.q65Submode, utc: sample.utc });
-  console.log(JSON.stringify({
+  const entry = {
+    kind: 'self-generated',
     sample: sample.name,
     generated: { message: sample.message, messageSent: encoded.messageSent.trim(), sampleRate: encoded.sampleRate, samples: encoded.audioData.length, seconds: encoded.audioData.length / encoded.sampleRate, stats: audioStats(encoded.audioData) },
     q65: { period: sample.q65Period, submode: sample.q65Submode },
     utc: sample.utc,
+    bestDecodedCount: bestMessages.length,
     probes: probeResults,
-  }));
-  if (bestMessages.length === 0) selfFailures++;
+  };
+  console.log(JSON.stringify(entry));
+  selfReports.push(entry);
 }
 
-let officialFailures = 0;
+const officialReports = [];
 for (const sample of samples) {
   const buffer = await getSample(sample.path);
   const { audio, sampleRate, format } = parseWav(buffer);
@@ -178,17 +184,60 @@ for (const sample of samples) {
   const utc = utcFromSamplePath(sample.path);
   const { probeResults, bestMessages } = await probeDecode({ audio, q65Period: sample.q65Period, q65Submode: sample.q65Submode, utc });
 
-  console.log(JSON.stringify({
+  const entry = {
+    kind: 'official-wsjtx-sample',
     sample: sample.name,
     path: sample.path,
     sampleUtcFromName: utc,
     wav: { sampleRate, samples: audio.length, seconds: audio.length / sampleRate, format, stats: audioStats(audio) },
     q65: { period: sample.q65Period, submode: sample.q65Submode },
+    bestDecodedCount: bestMessages.length,
     probes: probeResults,
-  }));
-  if (bestMessages.length === 0) officialFailures++;
+  };
+  console.log(JSON.stringify(entry));
+  officialReports.push(entry);
 }
 
-if (selfFailures > 0 || officialFailures > 0) {
+const selfFailures = selfReports.filter((r) => r.bestDecodedCount === 0).length;
+const officialFailures = officialReports.filter((r) => r.bestDecodedCount === 0).length;
+const report = {
+  generatedAt: new Date().toISOString(),
+  requireDecode,
+  summary: {
+    selfTotal: selfReports.length,
+    selfZeroDecode: selfFailures,
+    officialTotal: officialReports.length,
+    officialZeroDecode: officialFailures,
+  },
+  self: selfReports,
+  official: officialReports,
+};
+await writeFile(reportPath, JSON.stringify(report, null, 2));
+
+const markdown = [
+  '# Q65 diagnostic report',
+  '',
+  `- Self-generated samples: ${selfReports.length - selfFailures}/${selfReports.length} produced at least one decode`,
+  `- Official WSJT-X samples: ${officialReports.length - officialFailures}/${officialReports.length} produced at least one decode`,
+  `- Strict failure mode: ${requireDecode ? 'enabled' : 'disabled'}`,
+  '',
+  '## Self-generated',
+  '| sample | period | submode | seconds | peak | rms | decoded |',
+  '|---|---:|---|---:|---:|---:|---:|',
+  ...selfReports.map((r) => `| ${r.sample} | ${r.q65.period} | ${r.q65.submode} | ${r.generated.seconds} | ${r.generated.stats.peak} | ${r.generated.stats.rms.toFixed(6)} | ${r.bestDecodedCount} |`),
+  '',
+  '## Official WSJT-X samples',
+  '| sample | period | submode | seconds | peak | rms | decoded |',
+  '|---|---:|---|---:|---:|---:|---:|',
+  ...officialReports.map((r) => `| ${r.sample} | ${r.q65.period} | ${r.q65.submode} | ${r.wav.seconds} | ${r.wav.stats.peak} | ${r.wav.stats.rms.toFixed(6)} | ${r.bestDecodedCount} |`),
+  '',
+  `Full JSON report: \`${reportPath}\``,
+  '',
+].join('\n');
+
+if (summaryPath) await writeFile(summaryPath, markdown, { flag: 'a' });
+console.log(JSON.stringify(report.summary));
+
+if (requireDecode && (selfFailures > 0 || officialFailures > 0)) {
   throw new Error(`${selfFailures} self-generated Q65 sample(s) and ${officialFailures} official Q65 sample(s) produced zero decodes across all probes`);
 }
