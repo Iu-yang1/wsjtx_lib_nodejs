@@ -110,22 +110,16 @@ function summarizeMessages(result) {
 }
 
 const lib = new WSJTXLib({ maxThreads: 4 });
-let failures = 0;
 
-for (const sample of samples) {
-  const buffer = await getSample(sample.path);
-  const { audio, sampleRate, format } = parseWav(buffer);
-  if (sampleRate !== 12000) {
-    throw new Error(`${sample.name}: expected 12000 Hz sample rate, got ${sampleRate}`);
-  }
-
+async function probeDecode({ audio, q65Period, q65Submode, utc }) {
   const base = {
     threads: 4,
+    utc,
     lowFreq: 0,
     highFreq: 5000,
     decodeDepth: 3,
-    q65Period: sample.q65Period,
-    q65Submode: sample.q65Submode,
+    q65Period,
+    q65Submode,
     q65MaxDrift: 100,
     q65ClearAveraging: true,
   };
@@ -144,22 +138,75 @@ for (const sample of samples) {
   for (const probe of probes) {
     const result = await lib.decode(WSJTXMode.Q65, audio, { ...base, ...probe });
     const messages = summarizeMessages(result);
-    probeResults.push({ label: probe.label, options: probe, decodedCount: messages.length, messages });
+    probeResults.push({ label: probe.label, options: { ...probe, utc }, decodedCount: messages.length, messages });
     if (messages.length > bestMessages.length) bestMessages = messages;
   }
+  return { probeResults, bestMessages };
+}
+
+const selfCases = [
+  { name: 'self-Q65-30A', q65Period: 30, q65Submode: 'A', message: 'CQ K1ABC FN20', utc: 120000 },
+  { name: 'self-Q65-60A', q65Period: 60, q65Submode: 'A', message: 'CQ K1ABC FN20', utc: 120000 },
+  { name: 'self-Q65-60B', q65Period: 60, q65Submode: 'B', message: 'CQ K1ABC FN20', utc: 120000 },
+];
+
+let selfFailures = 0;
+for (const sample of selfCases) {
+  const encoded = await lib.encode(WSJTXMode.Q65, sample.message, 1500, {
+    threads: 1,
+    q65Period: sample.q65Period,
+    q65Submode: sample.q65Submode,
+  });
+  const { probeResults, bestMessages } = await probeDecode({
+    audio: encoded.audioData,
+    q65Period: sample.q65Period,
+    q65Submode: sample.q65Submode,
+    utc: sample.utc,
+  });
+  console.log(JSON.stringify({
+    sample: sample.name,
+    generated: {
+      message: sample.message,
+      messageSent: encoded.messageSent.trim(),
+      sampleRate: encoded.sampleRate,
+      samples: encoded.audioData.length,
+      seconds: encoded.audioData.length / encoded.sampleRate,
+    },
+    q65: { period: sample.q65Period, submode: sample.q65Submode },
+    utc: sample.utc,
+    probes: probeResults,
+  }));
+  if (bestMessages.length === 0) selfFailures++;
+}
+
+let officialFailures = 0;
+for (const sample of samples) {
+  const buffer = await getSample(sample.path);
+  const { audio, sampleRate, format } = parseWav(buffer);
+  if (sampleRate !== 12000) {
+    throw new Error(`${sample.name}: expected 12000 Hz sample rate, got ${sampleRate}`);
+  }
+
+  const utc = utcFromSamplePath(sample.path);
+  const { probeResults, bestMessages } = await probeDecode({
+    audio,
+    q65Period: sample.q65Period,
+    q65Submode: sample.q65Submode,
+    utc,
+  });
 
   console.log(JSON.stringify({
     sample: sample.name,
     path: sample.path,
-    sampleUtcFromName: utcFromSamplePath(sample.path),
+    sampleUtcFromName: utc,
     wav: { sampleRate, samples: audio.length, seconds: audio.length / sampleRate, format },
     q65: { period: sample.q65Period, submode: sample.q65Submode },
     probes: probeResults,
   }));
 
-  if (bestMessages.length === 0) failures++;
+  if (bestMessages.length === 0) officialFailures++;
 }
 
-if (failures > 0) {
-  throw new Error(`${failures} official Q65 sample(s) produced zero decodes across all probes`);
+if (selfFailures > 0 || officialFailures > 0) {
+  throw new Error(`${selfFailures} self-generated Q65 sample(s) and ${officialFailures} official Q65 sample(s) produced zero decodes across all probes`);
 }
