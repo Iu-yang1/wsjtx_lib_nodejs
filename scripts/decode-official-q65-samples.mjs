@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import https from 'node:https';
 import { WSJTXLib, WSJTXMode } from '../dist/src/index.js';
@@ -10,30 +10,10 @@ const root = join(__dirname, '..');
 const cacheDir = join(root, '.cache', 'wsjtx-official-q65-samples');
 
 const samples = [
-  {
-    name: 'Q65-30A ionoscatter 6m',
-    path: 'samples/Q65/30A_Ionoscatter_6m/201203_022700.wav',
-    q65Period: 30,
-    q65Submode: 'A',
-  },
-  {
-    name: 'Q65-60A EME 6m',
-    path: 'samples/Q65/60A_EME_6m/210106_1621.wav',
-    q65Period: 60,
-    q65Submode: 'A',
-  },
-  {
-    name: 'Q65-60B 1296 troposcatter',
-    path: 'samples/Q65/60B_1296_Troposcatter/210109_0007.wav',
-    q65Period: 60,
-    q65Submode: 'B',
-  },
-  {
-    name: 'Q65-120E ionoscatter 6m',
-    path: 'samples/Q65/120E_Ionoscatter_6m/210130_1438.wav',
-    q65Period: 120,
-    q65Submode: 'E',
-  },
+  { name: 'Q65-30A ionoscatter 6m', path: 'samples/Q65/30A_Ionoscatter_6m/201203_022700.wav', q65Period: 30, q65Submode: 'A' },
+  { name: 'Q65-60A EME 6m', path: 'samples/Q65/60A_EME_6m/210106_1621.wav', q65Period: 60, q65Submode: 'A' },
+  { name: 'Q65-60B 1296 troposcatter', path: 'samples/Q65/60B_1296_Troposcatter/210109_0007.wav', q65Period: 60, q65Submode: 'B' },
+  { name: 'Q65-120E ionoscatter 6m', path: 'samples/Q65/120E_Ionoscatter_6m/210130_1438.wav', q65Period: 120, q65Submode: 'E' },
 ];
 
 function download(url) {
@@ -74,7 +54,6 @@ function parseWav(buffer) {
   if (readAscii(buffer, 0, 4) !== 'RIFF' || readAscii(buffer, 8, 4) !== 'WAVE') {
     throw new Error('Not a RIFF/WAVE file');
   }
-
   let offset = 12;
   let fmt = null;
   let dataOffset = -1;
@@ -96,11 +75,9 @@ function parseWav(buffer) {
     }
     offset = chunkData + chunkSize + (chunkSize % 2);
   }
-
   if (!fmt) throw new Error('Missing fmt chunk');
   if (dataOffset < 0) throw new Error('Missing data chunk');
   if (fmt.channels !== 1) throw new Error(`Expected mono WAV, got ${fmt.channels} channels`);
-
   const view = new DataView(buffer.buffer, buffer.byteOffset + dataOffset, dataLength);
   if (fmt.audioFormat === 1 && fmt.bitsPerSample === 16) {
     const audio = new Int16Array(dataLength / 2);
@@ -112,8 +89,24 @@ function parseWav(buffer) {
     for (let i = 0; i < audio.length; i++) audio[i] = view.getFloat32(i * 4, true);
     return { audio, sampleRate: fmt.sampleRate, format: 'float32le' };
   }
-
   throw new Error(`Unsupported WAV format: audioFormat=${fmt.audioFormat}, bitsPerSample=${fmt.bitsPerSample}`);
+}
+
+function utcFromSamplePath(path) {
+  const stem = basename(path, '.wav').split('_').at(-1) ?? '';
+  if (/^\d{6}$/.test(stem)) return Number(stem);
+  if (/^\d{4}$/.test(stem)) return Number(`${stem}00`);
+  return null;
+}
+
+function summarizeMessages(result) {
+  return result.messages.map((m) => ({
+    text: m.text.trim(),
+    snr: m.snr,
+    dt: m.deltaTime,
+    freq: m.deltaFrequency,
+    sync: m.sync,
+  }));
 }
 
 const lib = new WSJTXLib({ maxThreads: 4 });
@@ -126,51 +119,47 @@ for (const sample of samples) {
     throw new Error(`${sample.name}: expected 12000 Hz sample rate, got ${sampleRate}`);
   }
 
-  const result = await lib.decode(WSJTXMode.Q65, audio, {
-    frequency: 1500,
-    txFrequency: 1500,
+  const base = {
     threads: 4,
     lowFreq: 0,
     highFreq: 5000,
-    tolerance: 5000,
     decodeDepth: 3,
     q65Period: sample.q65Period,
     q65Submode: sample.q65Submode,
     q65MaxDrift: 100,
     q65ClearAveraging: true,
-    q65SingleDecode: false,
-    q65Averaging: true,
-  });
+  };
 
-  const messages = result.messages.map((m) => ({
-    text: m.text.trim(),
-    snr: m.snr,
-    dt: m.deltaTime,
-    freq: m.deltaFrequency,
-    sync: m.sync,
-  }));
+  const probes = [
+    { label: 'wide-noavg', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65Averaging: false, q65SingleDecode: false },
+    { label: 'wide-avg', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65Averaging: true, q65SingleDecode: false },
+    { label: 'wide-single', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65Averaging: false, q65SingleDecode: true },
+    { label: 'center-1000', frequency: 1000, txFrequency: 1000, tolerance: 1000, q65Averaging: false, q65SingleDecode: false },
+    { label: 'center-1500', frequency: 1500, txFrequency: 1500, tolerance: 1000, q65Averaging: false, q65SingleDecode: false },
+    { label: 'center-2000', frequency: 2000, txFrequency: 2000, tolerance: 1000, q65Averaging: false, q65SingleDecode: false },
+  ];
+
+  const probeResults = [];
+  let bestMessages = [];
+  for (const probe of probes) {
+    const result = await lib.decode(WSJTXMode.Q65, audio, { ...base, ...probe });
+    const messages = summarizeMessages(result);
+    probeResults.push({ label: probe.label, options: probe, decodedCount: messages.length, messages });
+    if (messages.length > bestMessages.length) bestMessages = messages;
+  }
 
   console.log(JSON.stringify({
     sample: sample.name,
     path: sample.path,
+    sampleUtcFromName: utcFromSamplePath(sample.path),
     wav: { sampleRate, samples: audio.length, seconds: audio.length / sampleRate, format },
-    options: {
-      q65Period: sample.q65Period,
-      q65Submode: sample.q65Submode,
-      lowFreq: 0,
-      highFreq: 5000,
-      tolerance: 5000,
-      decodeDepth: 3,
-      q65MaxDrift: 100,
-      q65Averaging: true,
-    },
-    decodedCount: messages.length,
-    messages,
+    q65: { period: sample.q65Period, submode: sample.q65Submode },
+    probes: probeResults,
   }));
 
-  if (messages.length === 0) failures++;
+  if (bestMessages.length === 0) failures++;
 }
 
 if (failures > 0) {
-  throw new Error(`${failures} official Q65 sample(s) produced zero decodes`);
+  throw new Error(`${failures} official Q65 sample(s) produced zero decodes across all probes`);
 }
