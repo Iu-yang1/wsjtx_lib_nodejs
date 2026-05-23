@@ -51,9 +51,7 @@ function readAscii(buffer, offset, length) {
 }
 
 function parseWav(buffer) {
-  if (readAscii(buffer, 0, 4) !== 'RIFF' || readAscii(buffer, 8, 4) !== 'WAVE') {
-    throw new Error('Not a RIFF/WAVE file');
-  }
+  if (readAscii(buffer, 0, 4) !== 'RIFF' || readAscii(buffer, 8, 4) !== 'WAVE') throw new Error('Not a RIFF/WAVE file');
   let offset = 12;
   let fmt = null;
   let dataOffset = -1;
@@ -99,14 +97,21 @@ function utcFromSamplePath(path) {
   return null;
 }
 
+function audioStats(audio) {
+  let peak = 0;
+  let sumSq = 0;
+  let nonzero = 0;
+  for (const v of audio) {
+    const x = Math.abs(v);
+    if (x > peak) peak = x;
+    if (x > 0) nonzero++;
+    sumSq += Number(v) * Number(v);
+  }
+  return { peak, rms: Math.sqrt(sumSq / audio.length), nonzero };
+}
+
 function summarizeMessages(result) {
-  return result.messages.map((m) => ({
-    text: m.text.trim(),
-    snr: m.snr,
-    dt: m.deltaTime,
-    freq: m.deltaFrequency,
-    sync: m.sync,
-  }));
+  return result.messages.map((m) => ({ text: m.text.trim(), snr: m.snr, dt: m.deltaTime, freq: m.deltaFrequency, sync: m.sync }));
 }
 
 const lib = new WSJTXLib({ maxThreads: 4 });
@@ -120,17 +125,17 @@ async function probeDecode({ audio, q65Period, q65Submode, utc }) {
     decodeDepth: 3,
     q65Period,
     q65Submode,
-    q65MaxDrift: 100,
     q65ClearAveraging: true,
   };
 
   const probes = [
-    { label: 'wide-noavg', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65Averaging: false, q65SingleDecode: false },
-    { label: 'wide-avg', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65Averaging: true, q65SingleDecode: false },
-    { label: 'wide-single', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65Averaging: false, q65SingleDecode: true },
-    { label: 'center-1000', frequency: 1000, txFrequency: 1000, tolerance: 1000, q65Averaging: false, q65SingleDecode: false },
-    { label: 'center-1500', frequency: 1500, txFrequency: 1500, tolerance: 1000, q65Averaging: false, q65SingleDecode: false },
-    { label: 'center-2000', frequency: 2000, txFrequency: 2000, tolerance: 1000, q65Averaging: false, q65SingleDecode: false },
+    { label: 'wide-default', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65MaxDrift: 50, q65Averaging: false, q65SingleDecode: false },
+    { label: 'wide-avg', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65MaxDrift: 50, q65Averaging: true, q65SingleDecode: false },
+    { label: 'wide-single', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65MaxDrift: 50, q65Averaging: false, q65SingleDecode: true },
+    { label: 'center-1000', frequency: 1000, txFrequency: 1000, tolerance: 1000, q65MaxDrift: 50, q65Averaging: false, q65SingleDecode: false },
+    { label: 'center-1500', frequency: 1500, txFrequency: 1500, tolerance: 1000, q65MaxDrift: 50, q65Averaging: false, q65SingleDecode: false },
+    { label: 'center-2000', frequency: 2000, txFrequency: 2000, tolerance: 1000, q65MaxDrift: 50, q65Averaging: false, q65SingleDecode: false },
+    { label: 'wide-drift100', frequency: 1500, txFrequency: 1500, tolerance: 5000, q65MaxDrift: 100, q65Averaging: false, q65SingleDecode: false },
   ];
 
   const probeResults = [];
@@ -152,26 +157,11 @@ const selfCases = [
 
 let selfFailures = 0;
 for (const sample of selfCases) {
-  const encoded = await lib.encode(WSJTXMode.Q65, sample.message, 1500, {
-    threads: 1,
-    q65Period: sample.q65Period,
-    q65Submode: sample.q65Submode,
-  });
-  const { probeResults, bestMessages } = await probeDecode({
-    audio: encoded.audioData,
-    q65Period: sample.q65Period,
-    q65Submode: sample.q65Submode,
-    utc: sample.utc,
-  });
+  const encoded = await lib.encode(WSJTXMode.Q65, sample.message, 1500, { threads: 1, q65Period: sample.q65Period, q65Submode: sample.q65Submode });
+  const { probeResults, bestMessages } = await probeDecode({ audio: encoded.audioData, q65Period: sample.q65Period, q65Submode: sample.q65Submode, utc: sample.utc });
   console.log(JSON.stringify({
     sample: sample.name,
-    generated: {
-      message: sample.message,
-      messageSent: encoded.messageSent.trim(),
-      sampleRate: encoded.sampleRate,
-      samples: encoded.audioData.length,
-      seconds: encoded.audioData.length / encoded.sampleRate,
-    },
+    generated: { message: sample.message, messageSent: encoded.messageSent.trim(), sampleRate: encoded.sampleRate, samples: encoded.audioData.length, seconds: encoded.audioData.length / encoded.sampleRate, stats: audioStats(encoded.audioData) },
     q65: { period: sample.q65Period, submode: sample.q65Submode },
     utc: sample.utc,
     probes: probeResults,
@@ -183,27 +173,19 @@ let officialFailures = 0;
 for (const sample of samples) {
   const buffer = await getSample(sample.path);
   const { audio, sampleRate, format } = parseWav(buffer);
-  if (sampleRate !== 12000) {
-    throw new Error(`${sample.name}: expected 12000 Hz sample rate, got ${sampleRate}`);
-  }
+  if (sampleRate !== 12000) throw new Error(`${sample.name}: expected 12000 Hz sample rate, got ${sampleRate}`);
 
   const utc = utcFromSamplePath(sample.path);
-  const { probeResults, bestMessages } = await probeDecode({
-    audio,
-    q65Period: sample.q65Period,
-    q65Submode: sample.q65Submode,
-    utc,
-  });
+  const { probeResults, bestMessages } = await probeDecode({ audio, q65Period: sample.q65Period, q65Submode: sample.q65Submode, utc });
 
   console.log(JSON.stringify({
     sample: sample.name,
     path: sample.path,
     sampleUtcFromName: utc,
-    wav: { sampleRate, samples: audio.length, seconds: audio.length / sampleRate, format },
+    wav: { sampleRate, samples: audio.length, seconds: audio.length / sampleRate, format, stats: audioStats(audio) },
     q65: { period: sample.q65Period, submode: sample.q65Submode },
     probes: probeResults,
   }));
-
   if (bestMessages.length === 0) officialFailures++;
 }
 
