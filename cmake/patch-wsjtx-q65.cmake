@@ -1,7 +1,7 @@
 # Idempotent source overlay for Q65 TX/RX support.
-# The parent package currently consumes boybook/wsjtx_lib as a submodule, so
-# these targeted replacements keep the Node binding self-contained without
-# requiring a forked submodule URL.
+# The parent package consumes boybook/wsjtx_lib as a submodule, so these
+# targeted replacements keep this binding self-contained without requiring a
+# forked submodule URL.
 
 function(wsjtx_replace_once file needle replacement description)
   file(READ "${file}" _content)
@@ -20,21 +20,19 @@ function(wsjtx_replace_once file needle replacement description)
 endfunction()
 
 set(_WSJTX_LIB_DIR "${CMAKE_SOURCE_DIR}/wsjtx_lib")
-set(_WSJTX_NATIVE_DIR "${CMAKE_SOURCE_DIR}/native")
 
-# 1) Add the C++ Q65 encoder declaration.
+# ---- wsjtx_encode.h --------------------------------------------------------
 set(_encode_h "${_WSJTX_LIB_DIR}/wsjtx_encode.h")
 wsjtx_replace_once(
   "${_encode_h}"
   "\t  std::vector<float> encode_ft4(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate);\n\t  std::vector<float> encode_wspr(wsjtxMode mode, int frequency, std::string message, std::string &msgsent);"
-  "\t  std::vector<float> encode_ft4(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate);\n\t  std::vector<float> encode_q65(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate);\n\t  std::vector<float> encode_wspr(wsjtxMode mode, int frequency, std::string message, std::string &msgsent);"
-  "declare wsjtx_encode::encode_q65")
+  "\t  std::vector<float> encode_ft4(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate);\n\t  std::vector<float> encode_q65(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate, int q65Period, int q65Submode);\n\t  std::vector<float> encode_wspr(wsjtxMode mode, int frequency, std::string message, std::string &msgsent);"
+  "declare parameterized wsjtx_encode::encode_q65")
 
-# 2) Add the C++ Q65 encoder implementation. Default is Q65-60A: 85 tones,
-# 60 s period, 7200 samples/symbol at 12 kHz, 1x tone-spacing submode A.
+# ---- wsjtx_encode.cpp ------------------------------------------------------
 set(_encode_cpp "${_WSJTX_LIB_DIR}/wsjtx_encode.cpp")
 set(_q65_impl [=[
-std::vector<float> wsjtx_encode::encode_q65(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate)
+std::vector<float> wsjtx_encode::encode_q65(wsjtxMode mode, int frequency, std::string message, std::string &msgsent, int sampleRate, int q65Period, int q65Submode)
 {
 	std::vector<float> signal;
 
@@ -52,11 +50,20 @@ std::vector<float> wsjtx_encode::encode_q65(wsjtxMode mode, int frequency, std::
 	msgsent = std::string(sendmsg);
 
 	int nsym = 85;
-	int ntrperiod = 60;
-	int nsubmode = 0;                 // Q65A. Tone spacing multiplier = 1.
+	int ntrperiod = q65Period;
+	if (ntrperiod != 30 && ntrperiod != 60 && ntrperiod != 120 && ntrperiod != 300) ntrperiod = 60;
+	int nsubmode = q65Submode;
+	if (nsubmode < 0 || nsubmode > 4) nsubmode = 0;
 	int hmod = 1 << nsubmode;
-	int nsps = (sampleRate / 12000) * 7200;
-	if (nsps <= 0) nsps = 7200;
+
+	int baseNsps = 7200;
+	if (ntrperiod == 30) baseNsps = 3600;
+	else if (ntrperiod == 60) baseNsps = 7200;
+	else if (ntrperiod == 120) baseNsps = 16000;
+	else if (ntrperiod == 300) baseNsps = 41472;
+
+	int nsps = (sampleRate / 12000) * baseNsps;
+	if (nsps <= 0) nsps = baseNsps;
 	float fsample = static_cast<float>(sampleRate);
 	float f0 = static_cast<float>(frequency);
 	int icmplx = 0;
@@ -74,25 +81,63 @@ wsjtx_replace_once(
   "${_encode_cpp}"
   "std::vector<float> wsjtx_encode::encode_wspr(wsjtxMode mode, int frequency, std::string message, std::string &msgsent)"
   "${_q65_impl}std::vector<float> wsjtx_encode::encode_wspr(wsjtxMode mode, int frequency, std::string message, std::string &msgsent)"
-  "implement wsjtx_encode::encode_q65")
+  "implement parameterized wsjtx_encode::encode_q65")
 
-# 3) Route Q65 through wsjtx_lib::encode().
+# ---- wsjtx_lib.h -----------------------------------------------------------
+set(_lib_h "${_WSJTX_LIB_DIR}/wsjtx_lib.h")
+wsjtx_replace_once(
+  "${_lib_h}"
+  "\tstd::vector<float> encode(wsjtxMode mode, int frequency, std::string message, std::string &messagesend, int sampleRate);"
+  "\tstd::vector<float> encode(wsjtxMode mode, int frequency, std::string message, std::string &messagesend, int sampleRate, int q65Period = 60, int q65Submode = 0);"
+  "extend wsjtx_lib::encode signature for Q65 options")
+wsjtx_replace_once(
+  "${_lib_h}"
+  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);"
+  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);\n\tvoid setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging);"
+  "declare wsjtx_lib::setDecodeQ65Controls")
+wsjtx_replace_once(
+  "${_lib_h}"
+  "\tint qso_progress_ = 0;\n\tDataQueue<WsjtxMessage> messageQueue_;"
+  "\tint qso_progress_ = 0;\n\tint q65_period_ = 60;\n\tint q65_submode_ = 0;\n\tint q65_max_drift_ = 50;\n\tbool q65_clear_averaging_ = false;\n\tbool q65_single_decode_ = false;\n\tbool q65_averaging_ = false;\n\tDataQueue<WsjtxMessage> messageQueue_;"
+  "add wsjtx_lib Q65 decode state")
+
+# ---- wsjtx_lib.cpp ---------------------------------------------------------
 set(_lib_cpp "${_WSJTX_LIB_DIR}/wsjtx_lib.cpp")
 wsjtx_replace_once(
   "${_lib_cpp}"
+  "void wsjtx_lib::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress)\n{\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}"
+  "void wsjtx_lib::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress)\n{\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}\n\nvoid wsjtx_lib::setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging)\n{\n\tq65_period_ = (period == 30 || period == 60 || period == 120 || period == 300) ? period : 60;\n\tq65_submode_ = (submode >= 0 && submode <= 4) ? submode : 0;\n\tq65_max_drift_ = maxDrift < 0 ? 50 : maxDrift;\n\tq65_clear_averaging_ = clearAveraging;\n\tq65_single_decode_ = singleDecode;\n\tq65_averaging_ = averaging;\n}"
+  "implement wsjtx_lib::setDecodeQ65Controls")
+wsjtx_replace_once(
+  "${_lib_cpp}"
+  "\tptr->setDecodeControls(ap_decode_, decode_depth_, tx_frequency_, qso_progress_);"
+  "\tptr->setDecodeControls(ap_decode_, decode_depth_, tx_frequency_, qso_progress_);\n\tptr->setDecodeQ65Controls(q65_period_, q65_submode_, q65_max_drift_, q65_clear_averaging_, q65_single_decode_, q65_averaging_);"
+  "forward Q65 decode controls")
+wsjtx_replace_once(
+  "${_lib_cpp}"
+  "std::vector<float> wsjtx_lib::encode(wsjtxMode mode, int frequency, std::string message, std::string &messagesend, int sampleRate)"
+  "std::vector<float> wsjtx_lib::encode(wsjtxMode mode, int frequency, std::string message, std::string &messagesend, int sampleRate, int q65Period, int q65Submode)"
+  "extend wsjtx_lib::encode implementation signature")
+wsjtx_replace_once(
+  "${_lib_cpp}"
   "\tcase FT4: {\n\t\tauto ptr = std::make_unique<wsjtx_encode>();\n\t\treturn ptr->encode_ft4(mode, frequency, message, messagesend, sampleRate);\n\t}\n\tdefault: return {};"
-  "\tcase FT4: {\n\t\tauto ptr = std::make_unique<wsjtx_encode>();\n\t\treturn ptr->encode_ft4(mode, frequency, message, messagesend, sampleRate);\n\t}\n\tcase Q65: {\n\t\tauto ptr = std::make_unique<wsjtx_encode>();\n\t\treturn ptr->encode_q65(mode, frequency, message, messagesend, sampleRate);\n\t}\n\tdefault: return {};"
+  "\tcase FT4: {\n\t\tauto ptr = std::make_unique<wsjtx_encode>();\n\t\treturn ptr->encode_ft4(mode, frequency, message, messagesend, sampleRate);\n\t}\n\tcase Q65: {\n\t\tauto ptr = std::make_unique<wsjtx_encode>();\n\t\treturn ptr->encode_q65(mode, frequency, message, messagesend, sampleRate, q65Period, q65Submode);\n\t}\n\tdefault: return {};"
   "route Q65 encode in wsjtx_lib")
 
-# 4) Route Q65 decoder results into the Node-visible message queue.
-set(_callbacks_f90 "${_WSJTX_LIB_DIR}/lib/decode_callbacks.f90")
+# ---- wsjtx_decode.h --------------------------------------------------------
+set(_decode_h "${_WSJTX_LIB_DIR}/wsjtx_decode.h")
 wsjtx_replace_once(
-  "${_callbacks_f90}"
-  "    endif\n    call flush(6)\n\n    select type(ctx => this)\n    type is (counting_q65_decoder)"
-  "    endif\n    call wsjtx_decoded(nutc,nsnr,dt,nint(freq),decoded)\n    call flush(6)\n\n    select type(ctx => this)\n    type is (counting_q65_decoder)"
-  "forward Q65 decode callback into C queue")
+  "${_decode_h}"
+  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);"
+  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);\n\tvoid setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging);"
+  "declare wstjx_decode::setDecodeQ65Controls")
+wsjtx_replace_once(
+  "${_decode_h}"
+  "\tint qso_progress_ = 0;\n\tstd::string my_call_, my_grid_;"
+  "\tint qso_progress_ = 0;\n\tint q65_period_ = 60;\n\tint q65_submode_ = 0;\n\tint q65_max_drift_ = 50;\n\tbool q65_clear_averaging_ = false;\n\tbool q65_single_decode_ = false;\n\tbool q65_averaging_ = false;\n\tstd::string my_call_, my_grid_;"
+  "add wstjx_decode Q65 state")
 
-# 5) Let the C++ decoder select Q65 mode 66 and use a full 60 s/12 kHz frame.
+# ---- wsjtx_decode.cpp ------------------------------------------------------
 set(_decode_cpp "${_WSJTX_LIB_DIR}/wsjtx_decode.cpp")
 wsjtx_replace_once(
   "${_decode_cpp}"
@@ -101,37 +146,35 @@ wsjtx_replace_once(
   "include <algorithm> for Q65 frame sizing")
 wsjtx_replace_once(
   "${_decode_cpp}"
-  "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tdefault: return;"
-  "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tcase Q65:\n\t\tparams.nmode = 66;\n\t\tparams.ntrperiod = 60;\n\t\tparams.kin = std::min(static_cast<int>(audiosamples.size()), 60 * 12000);\n\t\tparams.nzhsym = 85;\n\t\tparams.nsubmode = 0;\n\t\tparams.ntxmode = 66;\n\t\tparams.max_drift = 50;\n\t\tbreak;\n\tdefault: return;"
-  "select Q65 decoder mode in float path")
+  "void wstjx_decode::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress) {\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}"
+  "void wstjx_decode::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress) {\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}\nvoid wstjx_decode::setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging) {\n\tq65_period_ = (period == 30 || period == 60 || period == 120 || period == 300) ? period : 60;\n\tq65_submode_ = (submode >= 0 && submode <= 4) ? submode : 0;\n\tq65_max_drift_ = maxDrift < 0 ? 50 : maxDrift;\n\tq65_clear_averaging_ = clearAveraging;\n\tq65_single_decode_ = singleDecode;\n\tq65_averaging_ = averaging;\n}"
+  "implement wstjx_decode::setDecodeQ65Controls")
+set(_q65_switch [=[
+	case FT8: params.nmode = 8; break;
+	case FT4: params.nmode = 5; break;
+	case Q65:
+		params.nmode = 66;
+		params.ntrperiod = q65_period_;
+		params.kin = std::min(static_cast<int>(audiosamples.size()), q65_period_ * 12000);
+		params.nzhsym = 85;
+		params.nsubmode = q65_submode_;
+		params.ntxmode = 66;
+		params.max_drift = q65_max_drift_;
+		params.nclearave = q65_clear_averaging_;
+		if (q65_single_decode_) params.nexp_decode |= 32;
+		if (q65_averaging_) params.ndepth |= 16;
+		break;
+	default: return;]=])
 wsjtx_replace_once(
   "${_decode_cpp}"
   "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tdefault: return;"
-  "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tcase Q65:\n\t\tparams.nmode = 66;\n\t\tparams.ntrperiod = 60;\n\t\tparams.kin = std::min(static_cast<int>(audiosamples.size()), 60 * 12000);\n\t\tparams.nzhsym = 85;\n\t\tparams.nsubmode = 0;\n\t\tparams.ntxmode = 66;\n\t\tparams.max_drift = 50;\n\t\tbreak;\n\tdefault: return;"
-  "select Q65 decoder mode in int16 path")
+  "${_q65_switch}"
+  "select parameterized Q65 decoder mode")
 
-# 6) Expose Q65 as encode-capable through the C ABI metadata.
-set(_c_api_cpp "${_WSJTX_NATIVE_DIR}/wsjtx_c_api.cpp")
+# ---- lib/decode_callbacks.f90 ---------------------------------------------
+set(_callbacks_f90 "${_WSJTX_LIB_DIR}/lib/decode_callbacks.f90")
 wsjtx_replace_once(
-  "${_c_api_cpp}"
-  "    /* Q65     */ { 12000, 60.0,  0, 1 },"
-  "    /* Q65     */ { 12000, 60.0,  1, 1 },"
-  "mark Q65 encode-capable in C ABI metadata")
-
-# 7) Let the Node wrapper accept Q65 transmit messages and Q65 48 kHz opt-in.
-set(_wrapper_cpp "${_WSJTX_NATIVE_DIR}/wsjtx_wrapper.cpp")
-wsjtx_replace_once(
-  "${_wrapper_cpp}"
-  "        if (mode == 0 || mode == 1) {\n            return Napi::Number::New(env, encodeSampleRate_);\n        }"
-  "        if (mode == WSJTX_MODE_FT8 || mode == WSJTX_MODE_FT4 || mode == WSJTX_MODE_Q65) {\n            return Napi::Number::New(env, encodeSampleRate_);\n        }"
-  "return configured encode sample rate for Q65")
-wsjtx_replace_once(
-  "${_wrapper_cpp}"
-  "        const size_t maxLength = (mode == WSJTX_MODE_FT8 || mode == WSJTX_MODE_FT4) ? 37 : 22;"
-  "        const size_t maxLength = (mode == WSJTX_MODE_FT8 || mode == WSJTX_MODE_FT4 || mode == WSJTX_MODE_Q65) ? 37 : 22;"
-  "allow 37-character Q65 messages")
-wsjtx_replace_once(
-  "${_wrapper_cpp}"
-  "        // FT8 at 48kHz for 12.64s = ~607,000 samples; 1M buffer is plenty.\n        static const int MAX_SAMPLES = 1024 * 1024;"
-  "        // Q65-60 at 48 kHz is 2,880,000 samples; keep enough headroom.\n        static const int MAX_SAMPLES = 4 * 1024 * 1024;"
-  "increase encode worker buffer for Q65-60")
+  "${_callbacks_f90}"
+  "    endif\n    call flush(6)\n\n    select type(ctx => this)\n    type is (counting_q65_decoder)"
+  "    endif\n    call wsjtx_decoded(nutc,nsnr,dt,nint(freq),decoded)\n    call flush(6)\n\n    select type(ctx => this)\n    type is (counting_q65_decoder)"
+  "forward Q65 decode callback into C queue")
