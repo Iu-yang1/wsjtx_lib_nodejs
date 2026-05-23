@@ -24,7 +24,7 @@ A high-performance Node.js C++ extension for digital amateur radio protocols, pr
 | JT65 | ❌       | ✅       | 11.025 kHz  | 46.8s    | ~180 Hz   |
 | JT9  | ❌       | ✅       | 12 kHz      | 49.0s    | ~16 Hz    |
 | FST4 | ❌       | ✅       | 12 kHz      | 60.0s    | Variable  |
-| Q65  | ❌       | ✅       | 12 kHz      | 60.0s    | Variable  |
+| Q65  | ✅       | ✅       | 12 kHz      | 60.0s    | Variable  |
 | FST4W| ❌       | ✅       | 12 kHz      | 120.0s   | Variable  |
 | WSPR | ❌       | ✅       | 12 kHz      | 110.6s   | ~6 Hz     |
 
