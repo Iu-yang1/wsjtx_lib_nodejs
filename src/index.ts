@@ -15,6 +15,7 @@ import {
   type ModeCapabilities,
   type DecodeOptions,
   type EncodeOptions,
+  type Q65Period,
   type Q65Submode,
 } from './types.js';
 import { createRequire } from 'node:module';
@@ -181,4 +182,4 @@ export class WSJTXLib {
 }
 
 export { WSJTXMode, WSJTXError };
-export type { DecodeResult, EncodeResult, EncodeOptions, Q65Submode, WSPRResult, WSPRDecodeOptions, WSJTXMessage, AudioData, WSJTXConfig, DecodeOptions, ModeCapabilities };
+export type { DecodeResult, EncodeResult, EncodeOptions, Q65Period, Q65Submode, WSPRResult, WSPRDecodeOptions, WSJTXMessage, AudioData, WSJTXConfig, DecodeOptions, ModeCapabilities };
