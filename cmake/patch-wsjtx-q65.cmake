@@ -1,4 +1,4 @@
-# Idempotent source overlay for Q65 TX/RX support in the wsjtx_lib submodule.
+# Idempotent source overlay for Q65 TX/RX support.
 # The parent package currently consumes boybook/wsjtx_lib as a submodule, so
 # these targeted replacements keep the Node binding self-contained without
 # requiring a forked submodule URL.
@@ -20,6 +20,7 @@ function(wsjtx_replace_once file needle replacement description)
 endfunction()
 
 set(_WSJTX_LIB_DIR "${CMAKE_SOURCE_DIR}/wsjtx_lib")
+set(_WSJTX_NATIVE_DIR "${CMAKE_SOURCE_DIR}/native")
 
 # 1) Add the C++ Q65 encoder declaration.
 set(_encode_h "${_WSJTX_LIB_DIR}/wsjtx_encode.h")
@@ -50,9 +51,9 @@ std::vector<float> wsjtx_encode::encode_q65(wsjtxMode mode, int frequency, std::
 	sendmsg[37] = '\0';
 	msgsent = std::string(sendmsg);
 
-	const int nsym = 85;
-	const int ntrperiod = 60;
-	const int nsubmode = 0;                 // Q65A. Tone spacing multiplier = 1.
+	int nsym = 85;
+	int ntrperiod = 60;
+	int nsubmode = 0;                 // Q65A. Tone spacing multiplier = 1.
 	int hmod = 1 << nsubmode;
 	int nsps = (sampleRate / 12000) * 7200;
 	if (nsps <= 0) nsps = 7200;
@@ -63,7 +64,7 @@ std::vector<float> wsjtx_encode::encode_q65(wsjtxMode mode, int frequency, std::
 
 	signal.assign(static_cast<size_t>(ntrperiod) * static_cast<size_t>(sampleRate), 0.0f);
 	std::vector<float> cwave(static_cast<size_t>(nwave) * 2U, 0.0f);
-	genwave_(const_cast<int *>(itone), const_cast<int *>(&nsym), &nsps, &nwave,
+	genwave_(const_cast<int *>(itone), &nsym, &nsps, &nwave,
 			 &fsample, &hmod, &f0, &icmplx, cwave.data(), signal.data());
 	return signal;
 }
@@ -108,3 +109,29 @@ wsjtx_replace_once(
   "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tdefault: return;"
   "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tcase Q65:\n\t\tparams.nmode = 66;\n\t\tparams.ntrperiod = 60;\n\t\tparams.kin = std::min(static_cast<int>(audiosamples.size()), 60 * 12000);\n\t\tparams.nzhsym = 85;\n\t\tparams.nsubmode = 0;\n\t\tparams.ntxmode = 66;\n\t\tparams.max_drift = 50;\n\t\tbreak;\n\tdefault: return;"
   "select Q65 decoder mode in int16 path")
+
+# 6) Expose Q65 as encode-capable through the C ABI metadata.
+set(_c_api_cpp "${_WSJTX_NATIVE_DIR}/wsjtx_c_api.cpp")
+wsjtx_replace_once(
+  "${_c_api_cpp}"
+  "    /* Q65     */ { 12000, 60.0,  0, 1 },"
+  "    /* Q65     */ { 12000, 60.0,  1, 1 },"
+  "mark Q65 encode-capable in C ABI metadata")
+
+# 7) Let the Node wrapper accept Q65 transmit messages and Q65 48 kHz opt-in.
+set(_wrapper_cpp "${_WSJTX_NATIVE_DIR}/wsjtx_wrapper.cpp")
+wsjtx_replace_once(
+  "${_wrapper_cpp}"
+  "        if (mode == 0 || mode == 1) {\n            return Napi::Number::New(env, encodeSampleRate_);\n        }"
+  "        if (mode == WSJTX_MODE_FT8 || mode == WSJTX_MODE_FT4 || mode == WSJTX_MODE_Q65) {\n            return Napi::Number::New(env, encodeSampleRate_);\n        }"
+  "return configured encode sample rate for Q65")
+wsjtx_replace_once(
+  "${_wrapper_cpp}"
+  "        const size_t maxLength = (mode == WSJTX_MODE_FT8 || mode == WSJTX_MODE_FT4) ? 37 : 22;"
+  "        const size_t maxLength = (mode == WSJTX_MODE_FT8 || mode == WSJTX_MODE_FT4 || mode == WSJTX_MODE_Q65) ? 37 : 22;"
+  "allow 37-character Q65 messages")
+wsjtx_replace_once(
+  "${_wrapper_cpp}"
+  "        // FT8 at 48kHz for 12.64s = ~607,000 samples; 1M buffer is plenty.\n        static const int MAX_SAMPLES = 1024 * 1024;"
+  "        // Q65-60 at 48 kHz is 2,880,000 samples; keep enough headroom.\n        static const int MAX_SAMPLES = 4 * 1024 * 1024;"
+  "increase encode worker buffer for Q65-60")
