@@ -97,6 +97,10 @@ typedef struct {
     int ap_decode;
     int decode_depth;
     int qso_progress;
+    int disk_data;
+    int new_data;
+    int again;
+    int capture_output;
     int q65_period;
     int q65_submode;
     int q65_max_drift;
