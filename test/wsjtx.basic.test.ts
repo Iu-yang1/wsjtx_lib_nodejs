@@ -143,6 +143,29 @@ describe('WSJTX library — smoke', () => {
     assert.strictEqual(q65OneTwentyE.audioData.length, 12000 * 120);
   });
 
+  it('Q65 self round-trip decodes a generated 30A frame', async () => {
+    const encoded = await lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, {
+      threads: 1,
+      q65Period: 30,
+      q65Submode: 'A',
+    });
+    const decoded = await lib.decode(WSJTXMode.Q65, encoded.audioData, {
+      frequency: 1500,
+      txFrequency: 1500,
+      threads: 1,
+      lowFreq: 0,
+      highFreq: 5000,
+      tolerance: 5000,
+      q65Period: 30,
+      q65Submode: 'A',
+      q65MaxDrift: 50,
+      q65ClearAveraging: true,
+    });
+
+    assert.strictEqual(decoded.success, true);
+    assert.ok(decoded.messages.some((m) => m.text.trim() === 'CQ K1ABC FN20'));
+  });
+
   it('rejects invalid Q65 encode options before reaching native code', async () => {
     await assert.rejects(
       () => lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, { q65Period: 45 as 60 }),
