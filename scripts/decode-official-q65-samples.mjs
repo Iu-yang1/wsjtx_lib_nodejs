@@ -126,6 +126,10 @@ async function probeDecode({ audio, q65Period, q65Submode, utc }) {
     lowFreq: 0,
     highFreq: 5000,
     decodeDepth: 3,
+    diskData: true,
+    newData: true,
+    again: false,
+    captureRawOutput: true,
     q65Period,
     q65Submode,
     q65ClearAveraging: true,
@@ -146,7 +150,14 @@ async function probeDecode({ audio, q65Period, q65Submode, utc }) {
   for (const probe of probes) {
     const result = await lib.decode(WSJTXMode.Q65, audio, { ...base, ...probe });
     const messages = summarizeMessages(result);
-    probeResults.push({ label: probe.label, options: { ...probe, utc }, decodedCount: messages.length, messages });
+    probeResults.push({
+      label: probe.label,
+      options: { ...probe, utc, diskData: true, newData: true, again: false, captureRawOutput: true },
+      decodedCount: messages.length,
+      messages,
+      rawOutput: result.rawOutput ?? [],
+      rawOutputLineCount: result.rawOutput?.length ?? 0,
+    });
     if (messages.length > bestMessages.length) bestMessages = messages;
   }
   return { probeResults, bestMessages };
@@ -214,22 +225,32 @@ const report = {
 };
 await writeFile(reportPath, JSON.stringify(report, null, 2));
 
+const firstRaw = [...selfReports, ...officialReports]
+  .flatMap((r) => r.probes.map((p) => p.rawOutput ?? []))
+  .find((lines) => lines.length > 0) ?? [];
+
 const markdown = [
   '# Q65 diagnostic report',
   '',
   `- Self-generated samples: ${selfReports.length - selfFailures}/${selfReports.length} produced at least one decode`,
   `- Official WSJT-X samples: ${officialReports.length - officialFailures}/${officialReports.length} produced at least one decode`,
   `- Strict failure mode: ${requireDecode ? 'enabled' : 'disabled'}`,
+  `- First captured raw-output lines: ${firstRaw.length}`,
   '',
   '## Self-generated',
-  '| sample | period | submode | seconds | peak | rms | decoded |',
-  '|---|---:|---|---:|---:|---:|---:|',
-  ...selfReports.map((r) => `| ${r.sample} | ${r.q65.period} | ${r.q65.submode} | ${r.generated.seconds} | ${r.generated.stats.peak} | ${r.generated.stats.rms.toFixed(6)} | ${r.bestDecodedCount} |`),
+  '| sample | period | submode | seconds | peak | rms | decoded | raw lines |',
+  '|---|---:|---|---:|---:|---:|---:|---:|',
+  ...selfReports.map((r) => `| ${r.sample} | ${r.q65.period} | ${r.q65.submode} | ${r.generated.seconds} | ${r.generated.stats.peak} | ${r.generated.stats.rms.toFixed(6)} | ${r.bestDecodedCount} | ${Math.max(...r.probes.map((p) => p.rawOutputLineCount))} |`),
   '',
   '## Official WSJT-X samples',
-  '| sample | period | submode | seconds | peak | rms | decoded |',
-  '|---|---:|---|---:|---:|---:|---:|',
-  ...officialReports.map((r) => `| ${r.sample} | ${r.q65.period} | ${r.q65.submode} | ${r.wav.seconds} | ${r.wav.stats.peak} | ${r.wav.stats.rms.toFixed(6)} | ${r.bestDecodedCount} |`),
+  '| sample | period | submode | seconds | peak | rms | decoded | raw lines |',
+  '|---|---:|---|---:|---:|---:|---:|---:|',
+  ...officialReports.map((r) => `| ${r.sample} | ${r.q65.period} | ${r.q65.submode} | ${r.wav.seconds} | ${r.wav.stats.peak} | ${r.wav.stats.rms.toFixed(6)} | ${r.bestDecodedCount} | ${Math.max(...r.probes.map((p) => p.rawOutputLineCount))} |`),
+  '',
+  '## First captured raw output',
+  '```text',
+  ...firstRaw.slice(0, 40),
+  '```',
   '',
   `Full JSON report: \`${reportPath}\``,
   '',
