@@ -189,3 +189,5 @@ wsjtx_replace_once(
   "\tparams.nutc = decode_utc_ >= 0 ? decode_utc_ : (local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec);"
   "\tparams.nutc = decode_utc_ >= 0 ? decode_utc_ : (local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec);\n\tparams.ndiskdat = disk_data_;\n\tparams.newdat = new_data_;\n\tparams.nagain = again_;"
   "set disk decode params")
+
+include("${CMAKE_SOURCE_DIR}/cmake/patch-q65-input-diagnostics.cmake")
