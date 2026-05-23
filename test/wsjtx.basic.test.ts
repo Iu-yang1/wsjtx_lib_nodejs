@@ -119,7 +119,7 @@ describe('WSJTX library — smoke', () => {
     assert.deepStrictEqual(r.messages, []);
   });
 
-  it('Q65 encode emits a full 60 s 12 kHz frame', async () => {
+  it('Q65 encode accepts legacy thread-count argument and emits a 60 s frame', async () => {
     const encoded = await lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, 1);
     assert.ok(encoded.audioData instanceof Float32Array);
     assert.strictEqual(encoded.sampleRate, 12000);
@@ -127,13 +127,46 @@ describe('WSJTX library — smoke', () => {
     assert.ok(encoded.messageSent.trim().length > 0);
   });
 
-  it('Q65 decode of silence completes successfully with empty messages', async () => {
-    const r = await lib.decode(WSJTXMode.Q65, new Float32Array(12000 * 60), {
+  it('Q65 encode accepts object options for period and submode', async () => {
+    const q65ThirtyB = await lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, {
+      threads: 1,
+      q65Period: 30,
+      q65Submode: 'B',
+    });
+    assert.strictEqual(q65ThirtyB.audioData.length, 12000 * 30);
+
+    const q65OneTwentyE = await lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, {
+      threads: 1,
+      q65Period: 120,
+      q65Submode: 4,
+    });
+    assert.strictEqual(q65OneTwentyE.audioData.length, 12000 * 120);
+  });
+
+  it('rejects invalid Q65 encode options before reaching native code', async () => {
+    await assert.rejects(
+      () => lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, { q65Period: 45 as 60 }),
+      WSJTXError,
+    );
+    await assert.rejects(
+      () => lib.encode(WSJTXMode.Q65, 'CQ K1ABC FN20', 1500, { q65Submode: 'F' as 'A' }),
+      WSJTXError,
+    );
+  });
+
+  it('Q65 decode accepts period, submode, drift, and averaging controls', async () => {
+    const r = await lib.decode(WSJTXMode.Q65, new Float32Array(12000 * 30), {
       frequency: 1500,
       threads: 1,
       lowFreq: 200,
       highFreq: 4000,
       tolerance: 50,
+      q65Period: 30,
+      q65Submode: 'B',
+      q65MaxDrift: 50,
+      q65ClearAveraging: true,
+      q65SingleDecode: true,
+      q65Averaging: true,
     });
     assert.strictEqual(r.success, true);
     assert.ok(Array.isArray(r.messages));
