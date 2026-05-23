@@ -20,6 +20,22 @@ function(wsjtx_replace_once file needle replacement description)
 endfunction()
 
 set(_WSJTX_LIB_DIR "${CMAKE_SOURCE_DIR}/wsjtx_lib")
+set(_WSJTX_NATIVE_DIR "${CMAKE_SOURCE_DIR}/native")
+
+# ---- native wrapper/C ABI UTC plumbing -------------------------------------
+set(_wrapper_cpp "${_WSJTX_NATIVE_DIR}/wsjtx_wrapper.cpp")
+wsjtx_replace_once(
+  "${_wrapper_cpp}"
+  "        opts.tx_frequency = getOptionalInt(optObj, \"txFrequency\", opts.frequency);"
+  "        opts.tx_frequency = getOptionalInt(optObj, \"txFrequency\", opts.frequency);\n        opts.utc = getOptionalInt(optObj, \"utc\", -1);"
+  "forward optional decode UTC from N-API wrapper")
+
+set(_c_api_cpp "${_WSJTX_NATIVE_DIR}/wsjtx_c_api.cpp")
+wsjtx_replace_once(
+  "${_c_api_cpp}"
+  "    lib->setDecodeRange(opts->low_freq, opts->high_freq, opts->tolerance);"
+  "    lib->setDecodeRange(opts->low_freq, opts->high_freq, opts->tolerance);\n    lib->setDecodeUtc(opts->utc);"
+  "forward optional decode UTC through C ABI")
 
 # ---- wsjtx_encode.h --------------------------------------------------------
 set(_encode_h "${_WSJTX_LIB_DIR}/wsjtx_encode.h")
@@ -93,26 +109,26 @@ wsjtx_replace_once(
 wsjtx_replace_once(
   "${_lib_h}"
   "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);"
-  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);\n\tvoid setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging);"
-  "declare wsjtx_lib::setDecodeQ65Controls")
+  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);\n\tvoid setDecodeUtc(int utc);\n\tvoid setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging);"
+  "declare wsjtx_lib::setDecodeUtc and Q65 controls")
 wsjtx_replace_once(
   "${_lib_h}"
   "\tint qso_progress_ = 0;\n\tDataQueue<WsjtxMessage> messageQueue_;"
-  "\tint qso_progress_ = 0;\n\tint q65_period_ = 60;\n\tint q65_submode_ = 0;\n\tint q65_max_drift_ = 50;\n\tbool q65_clear_averaging_ = false;\n\tbool q65_single_decode_ = false;\n\tbool q65_averaging_ = false;\n\tDataQueue<WsjtxMessage> messageQueue_;"
-  "add wsjtx_lib Q65 decode state")
+  "\tint qso_progress_ = 0;\n\tint decode_utc_ = -1;\n\tint q65_period_ = 60;\n\tint q65_submode_ = 0;\n\tint q65_max_drift_ = 50;\n\tbool q65_clear_averaging_ = false;\n\tbool q65_single_decode_ = false;\n\tbool q65_averaging_ = false;\n\tDataQueue<WsjtxMessage> messageQueue_;"
+  "add wsjtx_lib UTC/Q65 decode state")
 
 # ---- wsjtx_lib.cpp ---------------------------------------------------------
 set(_lib_cpp "${_WSJTX_LIB_DIR}/wsjtx_lib.cpp")
 wsjtx_replace_once(
   "${_lib_cpp}"
   "void wsjtx_lib::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress)\n{\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}"
-  "void wsjtx_lib::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress)\n{\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}\n\nvoid wsjtx_lib::setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging)\n{\n\tq65_period_ = (period == 30 || period == 60 || period == 120 || period == 300) ? period : 60;\n\tq65_submode_ = (submode >= 0 && submode <= 4) ? submode : 0;\n\tq65_max_drift_ = maxDrift < 0 ? 50 : maxDrift;\n\tq65_clear_averaging_ = clearAveraging;\n\tq65_single_decode_ = singleDecode;\n\tq65_averaging_ = averaging;\n}"
-  "implement wsjtx_lib::setDecodeQ65Controls")
+  "void wsjtx_lib::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress)\n{\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}\n\nvoid wsjtx_lib::setDecodeUtc(int utc)\n{\n\tdecode_utc_ = utc;\n}\n\nvoid wsjtx_lib::setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging)\n{\n\tq65_period_ = (period == 30 || period == 60 || period == 120 || period == 300) ? period : 60;\n\tq65_submode_ = (submode >= 0 && submode <= 4) ? submode : 0;\n\tq65_max_drift_ = maxDrift < 0 ? 50 : maxDrift;\n\tq65_clear_averaging_ = clearAveraging;\n\tq65_single_decode_ = singleDecode;\n\tq65_averaging_ = averaging;\n}"
+  "implement wsjtx_lib UTC/Q65 controls")
 wsjtx_replace_once(
   "${_lib_cpp}"
   "\tptr->setDecodeControls(ap_decode_, decode_depth_, tx_frequency_, qso_progress_);"
-  "\tptr->setDecodeControls(ap_decode_, decode_depth_, tx_frequency_, qso_progress_);\n\tptr->setDecodeQ65Controls(q65_period_, q65_submode_, q65_max_drift_, q65_clear_averaging_, q65_single_decode_, q65_averaging_);"
-  "forward Q65 decode controls")
+  "\tptr->setDecodeControls(ap_decode_, decode_depth_, tx_frequency_, qso_progress_);\n\tptr->setDecodeUtc(decode_utc_);\n\tptr->setDecodeQ65Controls(q65_period_, q65_submode_, q65_max_drift_, q65_clear_averaging_, q65_single_decode_, q65_averaging_);"
+  "forward UTC/Q65 decode controls")
 wsjtx_replace_once(
   "${_lib_cpp}"
   "std::vector<float> wsjtx_lib::encode(wsjtxMode mode, int frequency, std::string message, std::string &messagesend, int sampleRate)"
@@ -129,13 +145,13 @@ set(_decode_h "${_WSJTX_LIB_DIR}/wsjtx_decode.h")
 wsjtx_replace_once(
   "${_decode_h}"
   "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);"
-  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);\n\tvoid setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging);"
-  "declare wstjx_decode::setDecodeQ65Controls")
+  "\tvoid setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress);\n\tvoid setDecodeUtc(int utc);\n\tvoid setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging);"
+  "declare wstjx_decode UTC/Q65 controls")
 wsjtx_replace_once(
   "${_decode_h}"
   "\tint qso_progress_ = 0;\n\tstd::string my_call_, my_grid_;"
-  "\tint qso_progress_ = 0;\n\tint q65_period_ = 60;\n\tint q65_submode_ = 0;\n\tint q65_max_drift_ = 50;\n\tbool q65_clear_averaging_ = false;\n\tbool q65_single_decode_ = false;\n\tbool q65_averaging_ = false;\n\tstd::string my_call_, my_grid_;"
-  "add wstjx_decode Q65 state")
+  "\tint qso_progress_ = 0;\n\tint decode_utc_ = -1;\n\tint q65_period_ = 60;\n\tint q65_submode_ = 0;\n\tint q65_max_drift_ = 50;\n\tbool q65_clear_averaging_ = false;\n\tbool q65_single_decode_ = false;\n\tbool q65_averaging_ = false;\n\tstd::string my_call_, my_grid_;"
+  "add wstjx_decode UTC/Q65 state")
 
 # ---- wsjtx_decode.cpp ------------------------------------------------------
 set(_decode_cpp "${_WSJTX_LIB_DIR}/wsjtx_decode.cpp")
@@ -147,8 +163,8 @@ wsjtx_replace_once(
 wsjtx_replace_once(
   "${_decode_cpp}"
   "void wstjx_decode::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress) {\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}"
-  "void wstjx_decode::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress) {\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}\nvoid wstjx_decode::setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging) {\n\tq65_period_ = (period == 30 || period == 60 || period == 120 || period == 300) ? period : 60;\n\tq65_submode_ = (submode >= 0 && submode <= 4) ? submode : 0;\n\tq65_max_drift_ = maxDrift < 0 ? 50 : maxDrift;\n\tq65_clear_averaging_ = clearAveraging;\n\tq65_single_decode_ = singleDecode;\n\tq65_averaging_ = averaging;\n}"
-  "implement wstjx_decode::setDecodeQ65Controls")
+  "void wstjx_decode::setDecodeControls(bool apDecode, int decodeDepth, int txFrequency, int qsoProgress) {\n\tap_decode_ = apDecode;\n\tdecode_depth_ = decodeDepth < 1 ? 1 : decodeDepth;\n\ttx_frequency_ = txFrequency;\n\tqso_progress_ = qsoProgress < 0 ? 0 : qsoProgress;\n}\nvoid wstjx_decode::setDecodeUtc(int utc) {\n\tdecode_utc_ = utc;\n}\nvoid wstjx_decode::setDecodeQ65Controls(int period, int submode, int maxDrift, bool clearAveraging, bool singleDecode, bool averaging) {\n\tq65_period_ = (period == 30 || period == 60 || period == 120 || period == 300) ? period : 60;\n\tq65_submode_ = (submode >= 0 && submode <= 4) ? submode : 0;\n\tq65_max_drift_ = maxDrift < 0 ? 50 : maxDrift;\n\tq65_clear_averaging_ = clearAveraging;\n\tq65_single_decode_ = singleDecode;\n\tq65_averaging_ = averaging;\n}"
+  "implement wstjx_decode UTC/Q65 controls")
 set(_q65_switch [=[
 	case FT8: params.nmode = 8; break;
 	case FT4: params.nmode = 5; break;
@@ -170,6 +186,11 @@ wsjtx_replace_once(
   "\tcase FT8: params.nmode = 8; break;\n\tcase FT4: params.nmode = 5; break;\n\tdefault: return;"
   "${_q65_switch}"
   "select parameterized Q65 decoder mode")
+wsjtx_replace_once(
+  "${_decode_cpp}"
+  "\tparams.nutc = local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec;"
+  "\tparams.nutc = decode_utc_ >= 0 ? decode_utc_ : (local_tm.tm_hour * 10000 + local_tm.tm_min * 100 + local_tm.tm_sec);"
+  "use provided decode UTC when present")
 
 # ---- lib/decode_callbacks.f90 ---------------------------------------------
 set(_callbacks_f90 "${_WSJTX_LIB_DIR}/lib/decode_callbacks.f90")
