@@ -31,6 +31,7 @@ interface NativeDecodeOptions {
   lowFreq: number; highFreq: number; tolerance: number;
   myCall: string; myGrid: string; dxCall: string; dxGrid: string;
   apDecode: boolean; decodeDepth: number; qsoProgress: number;
+  diskData: boolean; newData: boolean; again: boolean; captureOutput: boolean;
   q65Period: number; q65Submode: number; q65MaxDrift: number;
   q65ClearAveraging: boolean; q65SingleDecode: boolean; q65Averaging: boolean;
 }
@@ -103,6 +104,10 @@ export class WSJTXLib {
       apDecode: options.apDecode ?? true,
       decodeDepth: options.decodeDepth ?? 1,
       qsoProgress: options.qsoProgress ?? 0,
+      diskData: options.diskData ?? mode === WSJTXMode.Q65,
+      newData: options.newData ?? true,
+      again: options.again ?? false,
+      captureOutput: options.captureRawOutput ?? mode === WSJTXMode.Q65,
       q65Period, q65Submode, q65MaxDrift,
       q65ClearAveraging: options.q65ClearAveraging ?? false,
       q65SingleDecode: options.q65SingleDecode ?? false,
